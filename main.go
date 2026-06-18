@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
-	"syscall"
 )
 
 type FilePermissionResponse struct {
@@ -30,34 +28,10 @@ type CheckRequest struct {
 	FilePath string `json:"file_path"`
 }
 
-var executableExtensions = map[string]bool{
-	".exe": true, ".bat": true, ".cmd": true,
-	".com": true, ".ps1": true, ".msi": true,
-	".scr": true, ".cpl": true, ".jar": true,
-}
-
-func isExecutableUnix(info os.FileInfo) bool {
-	mode := info.Mode()
-	return mode&0111 != 0
-}
-
-func isExecutableWindows(filePath string, info os.FileInfo) (bool, string) {
-	if info.IsDir() {
-		return false, "directory"
-	}
-
-	ext := strings.ToLower(filepath.Ext(filePath))
-	if executableExtensions[ext] {
-		return true, fmt.Sprintf("executable extension: %s", ext)
-	}
-
-	return false, fmt.Sprintf("non-executable extension: %s", ext)
-}
-
 func checkPermissions(filePath string) FilePermissionResponse {
 	resp := FilePermissionResponse{
 		FilePath: filePath,
-		OS:       runtime.GOOS,
+		OS:       getOSName(),
 	}
 
 	absPath, err := filepath.Abs(filePath)
@@ -84,51 +58,12 @@ func checkPermissions(filePath string) FilePermissionResponse {
 	resp.Size = info.Size()
 	resp.Permission = info.Mode().Perm().String()
 
-	file, err := os.Open(resp.FilePath)
-	if err == nil {
-		resp.IsReadable = true
-		file.Close()
-	} else {
-		resp.IsReadable = false
-	}
+	resp.IsReadable = isReadable(resp.FilePath, info)
+	resp.IsWritable = isWritable(resp.FilePath, info)
 
-	testWritePath := resp.FilePath + ".write_test"
-	testFile, err := os.OpenFile(testWritePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-	if err == nil {
-		resp.IsWritable = true
-		testFile.Close()
-		os.Remove(testWritePath)
-	} else {
-		writeDir := filepath.Dir(resp.FilePath)
-		testFile, err = os.OpenFile(filepath.Join(writeDir, ".write_test_"+fmt.Sprintf("%d", os.Getpid())), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
-		if err == nil {
-			resp.IsWritable = true
-			testFile.Close()
-			os.Remove(filepath.Join(writeDir, ".write_test_"+fmt.Sprintf("%d", os.Getpid())))
-		} else {
-			resp.IsWritable = false
-		}
-	}
-
-	switch runtime.GOOS {
-	case "windows":
-		isExe, infoMsg := isExecutableWindows(resp.FilePath, info)
-		resp.IsExecutable = isExe
-		resp.ExecutableInfo = infoMsg
-	default:
-		resp.IsExecutable = isExecutableUnix(info)
-		if resp.IsExecutable {
-			resp.ExecutableInfo = fmt.Sprintf("has execute permission (mode: %s)", info.Mode().Perm())
-		} else {
-			resp.ExecutableInfo = fmt.Sprintf("no execute permission (mode: %s)", info.Mode().Perm())
-		}
-	}
-
-	if runtime.GOOS == "windows" && resp.IsExecutable {
-		if sysInfo, ok := info.Sys().(*syscall.Win32FileAttributeData); ok {
-			_ = sysInfo
-		}
-	}
+	isExe, infoMsg := isExecutable(resp.FilePath, info)
+	resp.IsExecutable = isExe
+	resp.ExecutableInfo = infoMsg
 
 	return resp
 }
